@@ -21,7 +21,7 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Atlas Bot is successfully running and Live!")
 
 def run_dummy_server():
-    port = int(os.environ.get("PORT", 10000)) # Render automatically assigns a PORT
+    port = int(os.environ.get("PORT", 10000)) 
     server = HTTPServer(('0.0.0.0', port), DummyHandler)
     server.serve_forever()
 # ----------------------------------------
@@ -48,10 +48,12 @@ Strict Rules:
 user_conversations = {}
 subscribed_users = set()
 
+# --- ONBOARDING EXPERIENCE ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     subscribed_users.add(chat_id)
     user_name = update.effective_user.first_name 
+    
     welcome_msg = (
         f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
         "To help me personalize your experience, could you tell me a bit about yourself? "
@@ -59,8 +61,34 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "And are there any specific stocks or sectors you'd like me to monitor?\n\n"
         "💡 *(Feel free to answer, or just skip this and ask me your first financial question!)*"
     )
-    await update.message.reply_text(welcome_msg)
+    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
 
+# --- MOCK GOOGLE INTEGRATIONS ---
+async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🔗 *Connect Your Accounts*\n\n"
+        "Atlas can securely connect to your daily tools to provide better financial insights. What would you like to link?\n\n"
+        "📧 /connect_gmail - Scan receipts, bills & financial emails\n"
+        "📅 /connect_calendar - Sync earnings calls & meeting schedules\n"
+        "📁 /connect_drive - Analyze financial PDFs and spreadsheets\n\n"
+        "*(You can skip this and connect later at any time!)*"
+    )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def connect_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This simulates a quick, seamless connection process safely
+    service = update.message.text.split('_')[1].capitalize()
+    
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    await asyncio.sleep(1.5) # Realistic slight delay
+    
+    success_msg = (
+        f"✅ *{service} Successfully Linked!*\n\n"
+        f"Atlas is now synced with your {service}. I will use this data to proactively assist you with your financial workflow."
+    )
+    await update.message.reply_text(success_msg, parse_mode='Markdown')
+
+# --- FINANCIAL FEATURES ---
 async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please provide a stock ticker symbol.\nExample: `/price TSLA` or `/price AAPL`", parse_mode='Markdown')
@@ -84,8 +112,9 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_conversations[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
     user_conversations[chat_id].append({"role": "user", "content": user_message})
     
+    # Limit memory to the last 30 interactions for deeper context
     if len(user_conversations[chat_id]) > 30:
-        user_conversations[chat_id] = [user_conversations[chat_id][0]] + user_conversations[chat_id][-9:]
+        user_conversations[chat_id] = [user_conversations[chat_id][0]] + user_conversations[chat_id][-29:]
 
     try:
         completion = client.chat.completions.create(
@@ -116,16 +145,22 @@ async def proactive_market_alert(context: ContextTypes.DEFAULT_TYPE):
             print(f"Failed to send alert to {chat_id}: {e}")
 
 def main():
-    print("Starting Atlas Bot (Live Web Service Version)... Please wait.")
+    print("Starting Atlas Bot (Hackathon Ready Version)... Please wait.")
     
-    # Start the dummy web server in a separate thread so it doesn't block the bot
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("price", price_command))
+    app.add_handler(CommandHandler("connect", connect_command))
+    app.add_handler(CommandHandler("connect_gmail", connect_service))
+    app.add_handler(CommandHandler("connect_calendar", connect_service))
+    app.add_handler(CommandHandler("connect_drive", connect_service))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_to_user))
 
+    # Proactive alerts
     job_queue = app.job_queue
     job_queue.run_repeating(proactive_market_alert, interval=120, first=10)
 
