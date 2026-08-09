@@ -54,7 +54,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = update.effective_user.first_name 
     welcome_msg = (
         f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
-        "I will proactively send you market updates. How can I help you with your finances today?"
+        "To help me personalize your experience, could you tell me a bit about yourself? "
+        "What best describes your role (e.g., Investor, Student, Finance Professional)? "
+        "And are there any specific stocks or sectors you'd like me to monitor?\n\n"
+        "💡 *(Feel free to answer, or just skip this and ask me your first financial question!)*"
     )
     await update.message.reply_text(welcome_msg)
 
