@@ -1,6 +1,8 @@
 import asyncio
 import sys
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import yfinance as yf
 from groq import Groq
 from telegram import Update
@@ -10,13 +12,26 @@ from telegram.ext import Application, MessageHandler, CommandHandler, filters, C
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Secure way to get API keys from Environment Variables
+# --- DUMMY WEB SERVER TO TRICK RENDER ---
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Atlas Bot is successfully running and Live!")
+
+def run_dummy_server():
+    port = int(os.environ.get("PORT", 10000)) # Render automatically assigns a PORT
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    server.serve_forever()
+# ----------------------------------------
+
+# Secure way to get API keys
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Check if keys are loaded
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
-    print("Error: API Keys not found! Please set TELEGRAM_TOKEN and GROQ_API_KEY in Environment Variables.")
+    print("Error: API Keys not found! Please set TELEGRAM_TOKEN and GROQ_API_KEY.")
     sys.exit(1)
 
 client = Groq(api_key=GROQ_API_KEY)
@@ -30,11 +45,16 @@ Strict Rules:
 4. HANDLE INDIAN TERMS: If explicitly asked about India-specific terms (RBI, NDTL, CRR, SLR), provide the accurate Indian context.
 5. Answer concisely, accurately, and act like a Pro Financial Analyst."""
 
+user_conversations = {}
+subscribed_users = set()
+
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    subscribed_users.add(chat_id)
     user_name = update.effective_user.first_name 
     welcome_msg = (
         f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
-        "How can I help you with your finances today?"
+        "I will proactively send you market updates. How can I help you with your finances today?"
     )
     await update.message.reply_text(welcome_msg)
 
@@ -42,10 +62,8 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Please provide a stock ticker symbol.\nExample: `/price TSLA` or `/price AAPL`", parse_mode='Markdown')
         return
-    
     ticker_symbol = context.args[0].upper()
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
-    
     try:
         stock = yf.Ticker(ticker_symbol)
         current_price = stock.fast_info['lastPrice']
@@ -55,33 +73,58 @@ async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
-    print(f"User asking: {user_message}")
+    chat_id = update.effective_chat.id
+    subscribed_users.add(chat_id)
+    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
     
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
+    if chat_id not in user_conversations:
+        user_conversations[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    user_conversations[chat_id].append({"role": "user", "content": user_message})
     
+    if len(user_conversations[chat_id]) > 10:
+        user_conversations[chat_id] = [user_conversations[chat_id][0]] + user_conversations[chat_id][-9:]
+
     try:
         completion = client.chat.completions.create(
             model="llama-3.1-8b-instant", 
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
+            messages=user_conversations[chat_id], 
             temperature=0.2, 
             max_tokens=300,
         )
         ai_reply = completion.choices[0].message.content
+        user_conversations[chat_id].append({"role": "assistant", "content": ai_reply})
         await update.message.reply_text(ai_reply)
     except Exception as e:
         print(f"Error: {e}")
         await update.message.reply_text("Sorry, small technical issue.")
 
-def main():
-    print("Starting Atlas Bot (Secure & Live Version)... Please wait.")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+async def proactive_market_alert(context: ContextTypes.DEFAULT_TYPE):
+    for chat_id in list(subscribed_users):
+        try:
+            stock = yf.Ticker("SPY")
+            price = stock.fast_info['lastPrice']
+            alert_msg = (
+                "🚨 *Proactive Market Alert*\n\n"
+                f"Just keeping you informed: the S&P 500 ETF (SPY) is currently trading at **${price:.2f}**.\n"
+                "Let me know if you need a deeper analysis for today's market!"
+            )
+            await context.bot.send_message(chat_id=chat_id, text=alert_msg, parse_mode='Markdown')
+        except Exception as e:
+            print(f"Failed to send alert to {chat_id}: {e}")
 
+def main():
+    print("Starting Atlas Bot (Live Web Service Version)... Please wait.")
+    
+    # Start the dummy web server in a separate thread so it doesn't block the bot
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("price", price_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_to_user))
+
+    job_queue = app.job_queue
+    job_queue.run_repeating(proactive_market_alert, interval=120, first=10)
 
     print("Bot is successfully running! Send a message on Telegram.")
     app.run_polling()
