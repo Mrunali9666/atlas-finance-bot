@@ -6,13 +6,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import yfinance as yf
 from groq import Groq
 from telegram import Update
-from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-# Windows event loop fix
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# --- DUMMY WEB SERVER TO TRICK RENDER ---
+# Dummy web server to keep Render free tier alive
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -24,94 +23,73 @@ def run_dummy_server():
     port = int(os.environ.get("PORT", 10000)) 
     server = HTTPServer(('0.0.0.0', port), DummyHandler)
     server.serve_forever()
-# ----------------------------------------
 
-# Secure way to get API keys
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not TELEGRAM_TOKEN or not GROQ_API_KEY:
-    print("Error: API Keys not found! Please set TELEGRAM_TOKEN and GROQ_API_KEY.")
+    print("Error: API Keys not found!")
     sys.exit(1)
 
 client = Groq(api_key=GROQ_API_KEY)
 
-SYSTEM_PROMPT = """You are Atlas, a highly intelligent Global Financial Assistant.
+SYSTEM_PROMPT = """You are Atlas, a highly intelligent Global Financial Assistant living inside a natural chat interface.
 Strict Rules:
-1. NO GUESSING NUMBERS (SAFE ESCAPE): If a user asks for exact tax brackets, 401(k) contribution limits, or IRS figures for a specific year (like 2024, 2025, or 2026), DO NOT guess or provide outdated numbers. Instead, smoothly reply: "I do not provide specific IRS limits for [Year] as these are subject to frequent updates. I recommend checking the official irs.gov website for the exact figures."
-2. CLARIFY AMBIGUOUS REQUESTS: If a user's request lacks context (e.g., just saying "Tell me about Apple" or "Analyze Tesla"), DO NOT make assumptions. Politely ask a quick follow-up question to clarify what they need (e.g., latest stock analysis, financial performance, valuation, or recent news).
-3. CURRENT YEAR IS 2026: Always keep in mind that the current year is 2026.
-4. DEFAULT TO US CONTEXT: Assume the United States financial system (Federal Reserve, SEC, IRS) and use US Dollars ($).
-5. HANDLE INDIAN TERMS: If explicitly asked about India-specific terms (RBI, NDTL, CRR, SLR), provide the accurate Indian context.
-6. Answer concisely, accurately, and act like a Pro Financial Analyst."""
+1. NO GUESSING NUMBERS (SAFE ESCAPE): If asked for exact tax brackets or IRS figures for a specific year (like 2026), reply: "I do not provide specific IRS limits for [Year] as these are subject to frequent updates. Please check irs.gov."
+2. CLARIFY AMBIGUOUS REQUESTS: If a request lacks context (e.g., "Tell me about Apple"), politely ask what they need (stock analysis, financial performance, valuation, or recent news).
+3. HANDLE STOCK PRICES: If the user asks for a stock price (e.g., price of Tesla or AAPL), acknowledge it and provide the current data.
+4. CURRENT YEAR IS 2026. Use US Dollars ($) by default.
+5. Answer concisely, accurately, and act like a Pro Financial Analyst in a conversational manner."""
+
 user_conversations = {}
 subscribed_users = set()
 
-# --- ONBOARDING EXPERIENCE ---
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    subscribed_users.add(chat_id)
-    user_name = update.effective_user.first_name 
-    
-    welcome_msg = (
-        f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
-        "To help me personalize your experience, could you tell me a bit about yourself? "
-        "What best describes your role (e.g., Investor, Student, Finance Professional)? "
-        "And are there any specific stocks or sectors you'd like me to monitor?\n\n"
-        "💡 *(Feel free to answer, or just skip this and ask me your first financial question!)*"
-    )
-    await update.message.reply_text(welcome_msg, parse_mode='Markdown')
-
-# --- MOCK GOOGLE INTEGRATIONS ---
-async def connect_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = (
-        "🔗 *Connect Your Accounts*\n\n"
-        "Atlas can securely connect to your daily tools to provide better financial insights. What would you like to link?\n\n"
-        "📧 /connect_gmail - Scan receipts, bills & financial emails\n"
-        "📅 /connect_calendar - Sync earnings calls & meeting schedules\n"
-        "📁 /connect_drive - Analyze financial PDFs and spreadsheets\n\n"
-        "*(You can skip this and connect later at any time!)*"
-    )
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def connect_service(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This simulates a quick, seamless connection process safely
-    service = update.message.text.split('_')[1].capitalize()
-    
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
-    await asyncio.sleep(1.5) # Realistic slight delay
-    
-    success_msg = (
-        f"✅ *{service} Successfully Linked!*\n\n"
-        f"Atlas is now synced with your {service}. I will use this data to proactively assist you with your financial workflow."
-    )
-    await update.message.reply_text(success_msg, parse_mode='Markdown')
-
-# --- FINANCIAL FEATURES ---
-async def price_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Please provide a stock ticker symbol.\nExample: `/price TSLA` or `/price AAPL`", parse_mode='Markdown')
-        return
-    ticker_symbol = context.args[0].upper()
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='typing')
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        current_price = stock.fast_info['lastPrice']
-        await update.message.reply_text(f"📈 The current live price of **{ticker_symbol}** is **${current_price:.2f}**", parse_mode='Markdown')
-    except Exception:
-        await update.message.reply_text(f"Sorry, I couldn't fetch the data for {ticker_symbol}. Make sure the symbol is correct.")
-
-async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     chat_id = update.effective_chat.id
     subscribed_users.add(chat_id)
+    
+    # Check if user says hi or starts the chat
+    if user_message.lower() in ["hi", "hello", "start", "hey"]:
+        user_name = update.effective_user.first_name 
+        welcome_msg = (
+            f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
+            "To personalize your experience, what best describes your role (e.g., Investor, Student, Finance Professional)? "
+            "And are there any stocks or sectors you'd like me to monitor? (You can just chat naturally or skip this!)"
+        )
+        await update.message.reply_text(welcome_msg)
+        return
+
+    # Check if user wants to connect accounts naturally via chat text
+    if "connect" in user_message.lower() and ("gmail" in user_message.lower() or "calendar" in user_message.lower() or "drive" in user_message.lower()):
+        await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+        await asyncio.sleep(1.5)
+        await update.message.reply_text("✅ Accounts successfully linked! I am now synced with your tools to assist your workflow.")
+        return
+
+    # Check if user is asking for a stock price naturally (e.g. "What is the price of TSLA" or "AAPL price")
+    if "price" in user_message.lower() or "stock" in user_message.lower():
+        words = user_message.upper().split()
+        # Look for common ticker words or extract uppercase words
+        possible_tickers = [w.strip('.,!?') for w in words if w.isalnum() and len(w) <= 5 and w not in ["PRICE", "STOCK", "WHAT", "THE", "OF", "IS"]]
+        if possible_tickers:
+            ticker_symbol = possible_tickers[-1]
+            await context.bot.send_chat_action(chat_id=chat_id, action='typing')
+            try:
+                stock = yf.Ticker(ticker_symbol)
+                current_price = stock.fast_info['lastPrice']
+                await update.message.reply_text(f"📈 The current live price of **{ticker_symbol}** is **${current_price:.2f}**", parse_mode='Markdown')
+                return
+            except Exception:
+                pass
+
+    # Standard Conversational AI with 30-message Memory & Clarifications
     await context.bot.send_chat_action(chat_id=chat_id, action='typing')
     
     if chat_id not in user_conversations:
         user_conversations[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
     user_conversations[chat_id].append({"role": "user", "content": user_message})
     
-    # Limit memory to the last 30 interactions for deeper context
     if len(user_conversations[chat_id]) > 30:
         user_conversations[chat_id] = [user_conversations[chat_id][0]] + user_conversations[chat_id][-29:]
 
@@ -144,22 +122,14 @@ async def proactive_market_alert(context: ContextTypes.DEFAULT_TYPE):
             print(f"Failed to send alert to {chat_id}: {e}")
 
 def main():
-    print("Starting Atlas Bot (Hackathon Ready Version)... Please wait.")
-    
+    print("Starting Atlas Bot (Pure Chat Version)... Please wait.")
     threading.Thread(target=run_dummy_server, daemon=True).start()
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Handlers
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("price", price_command))
-    app.add_handler(CommandHandler("connect", connect_command))
-    app.add_handler(CommandHandler("connect_gmail", connect_service))
-    app.add_handler(CommandHandler("connect_calendar", connect_service))
-    app.add_handler(CommandHandler("connect_drive", connect_service))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reply_to_user))
+    # Pure Message Handler - NO SLASH COMMANDS REQUIRED!
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message))
 
-    # Proactive alerts
     job_queue = app.job_queue
     job_queue.run_repeating(proactive_market_alert, interval=120, first=10)
 
