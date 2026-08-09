@@ -81,7 +81,7 @@ async def reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_conversations[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
     user_conversations[chat_id].append({"role": "user", "content": user_message})
     
-    if len(user_conversations[chat_id]) > 10:
+    if len(user_conversations[chat_id]) > 30:
         user_conversations[chat_id] = [user_conversations[chat_id][0]] + user_conversations[chat_id][-9:]
 
     try:
