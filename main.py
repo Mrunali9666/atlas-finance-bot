@@ -1,4 +1,6 @@
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import yfinance as yf
 import PyPDF2
 from telegram import Update
@@ -6,9 +8,22 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from groq import Groq
 
 # ==========================================
-# 🔑 API KEYS SETUP
+#  DUMMY WEB SERVER (TO KEEP RENDER HAPPY)
 # ==========================================
-# (Make sure to replace these with your actual keys or use os.getenv)
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Atlas Bot is running successfully on Render!")
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
+    server.serve_forever()
+
+# ==========================================
+#  API KEYS SETUP
+# ==========================================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
 
@@ -19,7 +34,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 chat_histories = {}
 
 # ==========================================
-# 📈 BACKGROUND JOB (PROACTIVE MARKET ALERTS)
+#  BACKGROUND JOB (PROACTIVE MARKET ALERTS)
 # ==========================================
 async def send_market_alert(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
@@ -28,7 +43,7 @@ async def send_market_alert(context: ContextTypes.DEFAULT_TYPE):
         spy = yf.Ticker("SPY")
         price = spy.history(period="1d")['Close'].iloc[-1]
         
-        msg = (f"🚨 *Proactive Market Alert*\n\n"
+        msg = (f" *Proactive Market Alert*\n\n"
                f"Just keeping you informed: the S&P 500 ETF (SPY) is currently trading at ${price:.2f}.\n"
                f"Let me know if you need a deeper analysis for today's market!")
         
@@ -37,7 +52,7 @@ async def send_market_alert(context: ContextTypes.DEFAULT_TYPE):
         print(f"Failed to send market alert: {e}")
 
 # ==========================================
-# 🚀 COMMAND HANDLERS
+#  COMMAND HANDLERS
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -48,14 +63,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     welcome_msg = (
-        "Hi Mrunali! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
+        "Hi Mrunali!  I am Atlas, your personal AI Finance Assistant.\n\n"
         "To personalize your experience, what best describes your role (e.g., Investor, Student, Finance Professional)? "
         "And are there any stocks or sectors you'd like me to monitor? (You can just chat naturally or skip this!)"
     )
     await update.message.reply_text(welcome_msg)
     
     # Start proactive alerts (Starts after 10 seconds, repeats every 120 seconds)
-    # If a job already exists for this chat, remove it first to avoid duplicates
     current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
     for job in current_jobs:
         job.schedule_removal()
@@ -65,7 +79,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ==========================================
-# 💬 TEXT MESSAGE HANDLER (WITH MEMORY)
+#  TEXT MESSAGE HANDLER (WITH MEMORY)
 # ==========================================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
@@ -80,7 +94,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # Call Groq API for response
         response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",  # Or your preferred Groq model
+            model="llama3-8b-8192", 
             messages=chat_histories[chat_id],
             max_tokens=500
         )
@@ -95,17 +109,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("I am currently analyzing massive amounts of data. Please try your request again in a moment.")
 
 # ==========================================
-# 📄 PDF DOCUMENT HANDLER
+#  PDF DOCUMENT HANDLER
 # ==========================================
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
-    # Check if file is PDF
     if not update.message.document.file_name.lower().endswith('.pdf'):
-        await update.message.reply_text("⚠️ Please upload a valid PDF file.")
+        await update.message.reply_text(" Please upload a valid PDF file.")
         return
 
-    await update.message.reply_text("📥 Document received! Reading the financial report... please wait ⏳")
+    await update.message.reply_text(" Document received! Reading the financial report... please wait ⏳")
     
     try:
         # 1. Download PDF
@@ -122,19 +135,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if text:
                     extracted_text += text
                     
-        # Clean up temp file
         os.remove(file_path)
         
         if not extracted_text.strip():
-            await update.message.reply_text("⚠️ Could not extract text. This might be an image-based PDF.")
+            await update.message.reply_text(" Could not extract text. This might be an image-based PDF.")
             return
 
         # 3. Prepare AI Prompt
         user_caption = update.message.caption or "Provide a structured executive summary of this financial document."
-        
-        # Limit text length so it doesn't crash Groq/RAM
-        truncated_text = extracted_text[:5000] 
-        
+        truncated_text = extracted_text[:5000] # Limit text length
         prompt = f"{user_caption}\n\nHere is the document text:\n{truncated_text}"
         
         if chat_id not in chat_histories:
@@ -158,13 +167,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         print(f"PDF Processing Error: {e}")
-        await update.message.reply_text("❌ There was an error processing your document. It might be too large.")
+        await update.message.reply_text(" There was an error processing your document. It might be too large.")
 
 # ==========================================
-# ⚙️ MAIN APPLICATION SETUP
+#  MAIN APPLICATION SETUP
 # ==========================================
 if __name__ == "__main__":
     print("Starting Atlas Bot...")
+    
+    #  START DUMMY WEB SERVER IN BACKGROUND
+    threading.Thread(target=keep_alive, daemon=True).start()
     
     # Initialize the Application
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -174,6 +186,6 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     
-    # Run Bot (With proper timeouts to prevent silent crashes)
+    # Run Bot
     print("Bot is live and polling!")
     app.run_polling(drop_pending_updates=True)
