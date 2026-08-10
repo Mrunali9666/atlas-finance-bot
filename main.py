@@ -84,8 +84,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=chat_id, action='typing')
 
     try:
+        # UPDATED TO NEW GROQ MODEL
         response = groq_client.chat.completions.create(
-            model="llama3-8b-8192", 
+            model="llama-3.1-8b-instant", 
             messages=chat_histories[chat_id],
             max_tokens=600
         )
@@ -138,8 +139,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         messages = chat_histories[chat_id] + [{"role": "user", "content": prompt}]
         
+        # UPDATED TO NEW GROQ MODEL
         response = groq_client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=messages,
             max_tokens=800
         )
