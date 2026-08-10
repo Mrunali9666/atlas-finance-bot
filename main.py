@@ -1,155 +1,179 @@
-import asyncio
-import sys
 import os
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import yfinance as yf
-from groq import Groq
+import PyPDF2
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from groq import Groq
 
-if sys.platform == 'win32':
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+# ==========================================
+# 🔑 API KEYS SETUP
+# ==========================================
+# (Make sure to replace these with your actual keys or use os.getenv)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE")
 
-# Dummy web server to keep Render free tier alive
-class DummyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Atlas Bot is successfully running and Live!")
+# Initialize Groq Client
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-def run_dummy_server():
-    port = int(os.environ.get("PORT", 10000)) 
-    server = HTTPServer(('0.0.0.0', port), DummyHandler)
-    server.serve_forever()
+# Dictionary to store chat context (Memory)
+chat_histories = {}
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
-if not TELEGRAM_TOKEN or not GROQ_API_KEY:
-    print("Error: API Keys not found!")
-    sys.exit(1)
-
-client = Groq(api_key=GROQ_API_KEY)
-
-SYSTEM_PROMPT = """You are Atlas, a highly intelligent Global Financial Assistant living inside a natural chat interface.
-Strict Rules:
-1. NO GUESSING NUMBERS (SAFE ESCAPE): If asked for exact tax brackets or IRS figures for a specific year (like 2026), reply: "I do not provide specific IRS limits for [Year] as these are subject to frequent updates. Please check irs.gov."
-2. CLARIFY AMBIGUOUS REQUESTS: If a request lacks context (e.g., "Tell me about Apple"), politely ask what they need (stock analysis, financial performance, valuation, or recent news).
-3. HANDLE STOCK PRICES: If the user asks for a stock price (e.g., price of Tesla or AAPL), acknowledge it and provide the current data.
-4. CURRENT YEAR IS 2026. Use US Dollars ($) by default.
-5. Answer concisely, accurately, and act like a Pro Financial Analyst in a conversational manner."""
-
-user_conversations = {}
-subscribed_users = set()
-
-async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_message = update.message.text
-    chat_id = update.effective_chat.id
-    subscribed_users.add(chat_id)
-    
-    # 1. Onboarding / Welcome flow on natural text
-    if user_message.lower() in ["hi", "hello", "start", "hey"]:
-        user_name = update.effective_user.first_name 
-        welcome_msg = (
-            f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
-            "To personalize your experience, what best describes your role (e.g., Investor, Student, Finance Professional)? "
-            "And are there any stocks or sectors you'd like me to monitor? (You can just chat naturally or skip this!)"
-        )
-        await update.message.reply_text(welcome_msg)
-        return
-
-    # 2. Mock Account Integrations (Gmail, Calendar, Drive)
-    if "connect" in user_message.lower() and ("gmail" in user_message.lower() or "calendar" in user_message.lower() or "drive" in user_message.lower()):
-        await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-        await asyncio.sleep(1.5)
-        await update.message.reply_text("✅ Accounts successfully linked! I am now synced with your tools to assist your workflow.")
-        return
-
-    # 3. Financial Document Intelligence (Summarize/Analyze Reports & PDFs)
-    if any(word in user_message.lower() for word in ["summarize", "document", "report", "annual", "quarterly", "filing", "pdf"]):
-        await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-        await asyncio.sleep(2) # Simulating heavy financial document processing
+# ==========================================
+# 📈 BACKGROUND JOB (PROACTIVE MARKET ALERTS)
+# ==========================================
+async def send_market_alert(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    try:
+        # Fetch live SPY (S&P 500) data
+        spy = yf.Ticker("SPY")
+        price = spy.history(period="1d")['Close'].iloc[-1]
         
-        doc_analysis = (
-            "📊 *Executive Financial Summary & Key Insights*\n\n"
-            "Based on the requested financial document analysis:\n"
-            "• **Revenue Growth:** Demonstrated a solid 12% YoY increase driven by core segment expansion.\n"
-            "• **Operating Margins:** Maintained resilience despite macroeconomic supply chain pressures.\n"
-            "• **Risk Factors:** Highlighted currency fluctuations and regulatory changes in primary markets.\n\n"
-            "*Would you like me to extract specific data points or compare this with previous quarters?*"
-        )
-        await update.message.reply_text(doc_analysis, parse_mode='Markdown')
-        return
+        msg = (f"🚨 *Proactive Market Alert*\n\n"
+               f"Just keeping you informed: the S&P 500 ETF (SPY) is currently trading at ${price:.2f}.\n"
+               f"Let me know if you need a deeper analysis for today's market!")
+        
+        await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+    except Exception as e:
+        print(f"Failed to send market alert: {e}")
 
-    # 4. Live Stock Price Extraction via yfinance
-    if "price" in user_message.lower() or "stock" in user_message.lower():
-        words = user_message.upper().split()
-        possible_tickers = [w.strip('.,!?') for w in words if w.isalnum() and len(w) <= 5 and w not in ["PRICE", "STOCK", "WHAT", "THE", "OF", "IS"]]
-        if possible_tickers:
-            ticker_symbol = possible_tickers[-1]
-            await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-            try:
-                stock = yf.Ticker(ticker_symbol)
-                current_price = stock.fast_info['lastPrice']
-                await update.message.reply_text(f"📈 The current live price of **{ticker_symbol}** is **${current_price:.2f}**", parse_mode='Markdown')
-                return
-            except Exception:
-                pass
+# ==========================================
+# 🚀 COMMAND HANDLERS
+# ==========================================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    
+    # Initialize chat history for the user
+    chat_histories[chat_id] = [
+        {"role": "system", "content": "You are Atlas, a highly intelligent and professional AI financial assistant. Provide concise, accurate financial answers. Keep responses short and impactful."}
+    ]
+    
+    welcome_msg = (
+        "Hi Mrunali! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
+        "To personalize your experience, what best describes your role (e.g., Investor, Student, Finance Professional)? "
+        "And are there any stocks or sectors you'd like me to monitor? (You can just chat naturally or skip this!)"
+    )
+    await update.message.reply_text(welcome_msg)
+    
+    # Start proactive alerts (Starts after 10 seconds, repeats every 120 seconds)
+    # If a job already exists for this chat, remove it first to avoid duplicates
+    current_jobs = context.job_queue.get_jobs_by_name(str(chat_id))
+    for job in current_jobs:
+        job.schedule_removal()
+        
+    context.job_queue.run_repeating(
+        send_market_alert, interval=120, first=10, chat_id=chat_id, name=str(chat_id)
+    )
 
-    # 5. Standard Conversational AI with 30-message Memory
-    await context.bot.send_chat_action(chat_id=chat_id, action='typing')
-    
-    if chat_id not in user_conversations:
-        user_conversations[chat_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    user_conversations[chat_id].append({"role": "user", "content": user_message})
-    
-    if len(user_conversations[chat_id]) > 30:
-        user_conversations[chat_id] = [user_conversations[chat_id][0]] + user_conversations[chat_id][-29:]
+# ==========================================
+# 💬 TEXT MESSAGE HANDLER (WITH MEMORY)
+# ==========================================
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    chat_id = update.effective_chat.id
+
+    if chat_id not in chat_histories:
+        chat_histories[chat_id] = [{"role": "system", "content": "You are Atlas, a highly intelligent AI financial assistant."}]
+
+    # Append user message to history
+    chat_histories[chat_id].append({"role": "user", "content": user_text})
 
     try:
-        completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant", 
-            messages=user_conversations[chat_id], 
-            temperature=0.2, 
-            max_tokens=300,
+        # Call Groq API for response
+        response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",  # Or your preferred Groq model
+            messages=chat_histories[chat_id],
+            max_tokens=500
         )
-        ai_reply = completion.choices[0].message.content
-        user_conversations[chat_id].append({"role": "assistant", "content": ai_reply})
-        await update.message.reply_text(ai_reply)
+        bot_reply = response.choices[0].message.content
+        
+        # Append bot response to history
+        chat_histories[chat_id].append({"role": "assistant", "content": bot_reply})
+        
+        await update.message.reply_text(bot_reply)
     except Exception as e:
-        print(f"Error: {e}")
-        await update.message.reply_text("Sorry, small technical issue.")
+        print(f"Groq API Error: {e}")
+        await update.message.reply_text("I am currently analyzing massive amounts of data. Please try your request again in a moment.")
 
-async def proactive_market_alert(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id in list(subscribed_users):
-        try:
-            stock = yf.Ticker("SPY")
-            price = stock.fast_info['lastPrice']
-            alert_msg = (
-                "🚨 *Proactive Market Alert*\n\n"
-                f"Just keeping you informed: the S&P 500 ETF (SPY) is currently trading at **${price:.2f}**.\n"
-                "Let me know if you need a deeper analysis for today's market!"
-            )
-            await context.bot.send_message(chat_id=chat_id, text=alert_msg, parse_mode='Markdown')
-        except Exception as e:
-            print(f"Failed to send alert to {chat_id}: {e}")
-
-def main():
-    print("Starting Atlas Bot (Fully Hackathon Compliant Version)... Please wait.")
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+# ==========================================
+# 📄 PDF DOCUMENT HANDLER
+# ==========================================
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     
-    # Pure text message handler (Zero slash commands to comply with rules)
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_message))
+    # Check if file is PDF
+    if not update.message.document.file_name.lower().endswith('.pdf'):
+        await update.message.reply_text("⚠️ Please upload a valid PDF file.")
+        return
 
-    job_queue = app.job_queue
-    job_queue.run_repeating(proactive_market_alert, interval=120, first=10)
+    await update.message.reply_text("📥 Document received! Reading the financial report... please wait ⏳")
+    
+    try:
+        # 1. Download PDF
+        file = await context.bot.get_file(update.message.document.file_id)
+        file_path = "temp_report.pdf"
+        await file.download_to_drive(file_path)
+        
+        # 2. Extract Text
+        extracted_text = ""
+        with open(file_path, "rb") as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text:
+                    extracted_text += text
+                    
+        # Clean up temp file
+        os.remove(file_path)
+        
+        if not extracted_text.strip():
+            await update.message.reply_text("⚠️ Could not extract text. This might be an image-based PDF.")
+            return
 
-    print("Bot is successfully running! Send a message on Telegram.")
-    app.run_polling()
+        # 3. Prepare AI Prompt
+        user_caption = update.message.caption or "Provide a structured executive summary of this financial document."
+        
+        # Limit text length so it doesn't crash Groq/RAM
+        truncated_text = extracted_text[:5000] 
+        
+        prompt = f"{user_caption}\n\nHere is the document text:\n{truncated_text}"
+        
+        if chat_id not in chat_histories:
+            chat_histories[chat_id] = [{"role": "system", "content": "You are Atlas, a highly intelligent AI financial assistant."}]
+            
+        messages = chat_histories[chat_id] + [{"role": "user", "content": prompt}]
+        
+        # 4. Get Summary from AI
+        response = groq_client.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=messages,
+            max_tokens=800
+        )
+        bot_reply = response.choices[0].message.content
+        
+        # Save context to memory
+        chat_histories[chat_id].append({"role": "user", "content": "I uploaded a document and asked you to summarize it."})
+        chat_histories[chat_id].append({"role": "assistant", "content": bot_reply})
 
-if __name__ == '__main__':
-    main()
+        await update.message.reply_text(bot_reply)
+
+    except Exception as e:
+        print(f"PDF Processing Error: {e}")
+        await update.message.reply_text("❌ There was an error processing your document. It might be too large.")
+
+# ==========================================
+# ⚙️ MAIN APPLICATION SETUP
+# ==========================================
+if __name__ == "__main__":
+    print("Starting Atlas Bot...")
+    
+    # Initialize the Application
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Register Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    
+    # Run Bot (With proper timeouts to prevent silent crashes)
+    print("Bot is live and polling!")
+    app.run_polling(drop_pending_updates=True, read_timeout=30, write_timeout=30)
