@@ -57,13 +57,16 @@ async def send_market_alert(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     
+    # Telegram kadhun user cha original first name fetch kar
+    user_name = update.effective_user.first_name if update.effective_user else "there"
+    
     # Initialize chat history for the user
     chat_histories[chat_id] = [
         {"role": "system", "content": "You are Atlas, a highly intelligent and professional AI financial assistant. Provide concise, accurate financial answers. Keep responses short and impactful."}
     ]
     
     welcome_msg = (
-        "Hi user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
+        f"Hi {user_name}! 👋 I am Atlas, your personal AI Finance Assistant.\n\n"
         "To personalize your experience, what best describes your role (e.g., Investor, Student, Finance Professional)? "
         "And are there any stocks or sectors you'd like me to monitor? (You can just chat naturally or skip this!)"
     )
