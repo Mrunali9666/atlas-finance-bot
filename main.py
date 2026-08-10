@@ -176,4 +176,4 @@ if __name__ == "__main__":
     
     # Run Bot (With proper timeouts to prevent silent crashes)
     print("Bot is live and polling!")
-    app.run_polling(drop_pending_updates=True, read_timeout=30, write_timeout=30)
+    app.run_polling(drop_pending_updates=True)
